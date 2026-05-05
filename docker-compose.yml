@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: observatory
+      POSTGRES_USER: observatory
+      POSTGRES_PASSWORD: observatory_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U observatory -d observatory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build: .
+    command: ["sh", "-c", "alembic upgrade head && uvicorn gateway.gateway:app --host 0.0.0.0 --port 8001"]
+    env_file:
+      - .env
+    environment:
+      STORAGE_MODE: local
+      DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build: .
+    command: ["streamlit", "run", "dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  evaluation-worker:
+    build: .
+    command: ["sh", "-c", "alembic upgrade head && python workers/evaluation_worker.py --limit 100"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  alert-worker:
+    build: .
+    command: ["sh", "-c", "alembic upgrade head && python workers/alert_worker.py"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

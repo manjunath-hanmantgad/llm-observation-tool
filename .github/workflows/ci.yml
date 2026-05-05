@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          LLM_PROVIDER: mock
+          STORAGE_MODE: local
+          DATABASE_URL: sqlite:///storage/ci_observatory.db
+          LLM_OBSERVATORY_DB_PATH: storage/ci_metrics.db
+          JWT_SECRET_KEY: ci_only_replace_in_production
+          API_KEY_PEPPER: ci_only_replace_in_production
+        run: pytest
