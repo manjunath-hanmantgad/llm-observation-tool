@@ -1,0 +1,113 @@
+{
+  "version": "1.0",
+  "project": "llm-observatory",
+  "cases": [
+    {
+      "id": "cost-001",
+      "description": "gpt-4o cost for 1000 prompt and 500 completion tokens",
+      "category": "cost_calculation",
+      "input": {"model": "gpt-4o", "prompt_tokens": 1000, "completion_tokens": 500},
+      "expected": {"cost_usd": 0.0125},
+      "tolerance_pct": 0.01,
+      "requires_live_llm": false
+    },
+    {
+      "id": "cost-002",
+      "description": "gpt-4o-mini cost for 2000 prompt and 2000 completion tokens",
+      "category": "cost_calculation",
+      "input": {"model": "gpt-4o-mini", "prompt_tokens": 2000, "completion_tokens": 2000},
+      "expected": {"cost_usd": 0.0015},
+      "tolerance_pct": 0.01,
+      "requires_live_llm": false
+    },
+    {
+      "id": "cost-003",
+      "description": "unknown model falls back to gpt-4o pricing",
+      "category": "cost_calculation",
+      "input": {"model": "unknown-model", "prompt_tokens": 100, "completion_tokens": 100},
+      "expected": {"cost_usd": 0.002},
+      "tolerance_pct": 0.01,
+      "requires_live_llm": false
+    },
+    {
+      "id": "alert-001",
+      "description": "high hallucination rate triggers hallucination alert",
+      "category": "alert_trigger",
+      "input": {
+        "metrics": {"evaluated_calls": 20, "hallucination_rate": 0.31, "avg_latency_ms": 1200, "failed_calls": 0},
+        "thresholds": {"hallucination_rate_threshold": 0.2, "avg_latency_ms_threshold": 2500}
+      },
+      "expected": {"contains": ["Hallucination rate"], "count": 1},
+      "requires_live_llm": false
+    },
+    {
+      "id": "alert-002",
+      "description": "high average latency triggers latency alert",
+      "category": "alert_trigger",
+      "input": {
+        "metrics": {"evaluated_calls": 20, "hallucination_rate": 0.05, "avg_latency_ms": 3500, "failed_calls": 0},
+        "thresholds": {"hallucination_rate_threshold": 0.2, "avg_latency_ms_threshold": 2500}
+      },
+      "expected": {"contains": ["Average latency"], "count": 1},
+      "requires_live_llm": false
+    },
+    {
+      "id": "alert-003",
+      "description": "failed call count triggers failure alert",
+      "category": "alert_trigger",
+      "input": {
+        "metrics": {"evaluated_calls": 0, "hallucination_rate": 0.0, "avg_latency_ms": 100, "failed_calls": 3},
+        "thresholds": {"hallucination_rate_threshold": 0.2, "avg_latency_ms_threshold": 2500}
+      },
+      "expected": {"contains": ["LLM calls have failed"], "count": 1},
+      "requires_live_llm": false
+    },
+    {
+      "id": "alert-004",
+      "description": "all healthy metrics produce no alerts",
+      "category": "alert_trigger",
+      "input": {
+        "metrics": {"evaluated_calls": 12, "hallucination_rate": 0.1, "avg_latency_ms": 900, "failed_calls": 0},
+        "thresholds": {"hallucination_rate_threshold": 0.2, "avg_latency_ms_threshold": 2500}
+      },
+      "expected": {"contains": [], "count": 0},
+      "requires_live_llm": false
+    },
+    {
+      "id": "eval-001",
+      "description": "fabricated response is flagged as hallucination",
+      "category": "eval_scoring",
+      "input": {
+        "question": "What is the company remote policy?",
+        "response": "This is fabricated and unsupported by policy.",
+        "judge_model": "mock-judge"
+      },
+      "expected": {"hallucination_flag": true, "faithfulness_score": 0.2, "relevancy_min": 0.75},
+      "requires_live_llm": false
+    },
+    {
+      "id": "eval-002",
+      "description": "empty response gets low relevancy",
+      "category": "eval_scoring",
+      "input": {
+        "question": "What are billing controls?",
+        "response": "",
+        "judge_model": "mock-judge"
+      },
+      "expected": {"hallucination_flag": false, "faithfulness_score": 0.85, "relevancy_min": 0.1, "relevancy_max": 0.1},
+      "requires_live_llm": false
+    },
+    {
+      "id": "eval-003",
+      "description": "question term overlap boosts relevancy",
+      "category": "eval_scoring",
+      "input": {
+        "question": "How do we handle incident response?",
+        "response": "Incident response runbook requires triage owner and on-call escalation.",
+        "judge_model": "mock-judge"
+      },
+      "expected": {"hallucination_flag": false, "faithfulness_score": 0.85, "relevancy_min": 0.75},
+      "requires_live_llm": false
+    }
+  ]
+}

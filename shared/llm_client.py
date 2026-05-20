@@ -46,16 +46,40 @@ class LLMClient:
 
     def chat(self, messages: list[dict[str, str]], purpose: str = "chat") -> LLMResponse:
         model = self.model_for(purpose)
+        langfuse = _get_langfuse(self.settings)
+        trace = langfuse.trace(name="llm-gateway-call") if langfuse else None
+        generation = (
+            trace.generation(
+                name="chat",
+                model=model,
+                input=messages,
+            )
+            if trace
+            else None
+        )
 
         if self.settings.llm_provider == "mock":
             content = self._mock_response(messages)
             prompt_tokens = estimate_tokens(str(messages))
             completion_tokens = estimate_tokens(content)
+            if generation:
+                generation.end(
+                    output=content,
+                    usage={"input": prompt_tokens, "output": completion_tokens},
+                )
             return LLMResponse(content, model, prompt_tokens, completion_tokens)
 
         assert self._client is not None
         response: Any = self._client.chat.completions.create(model=model, messages=messages)
         content = response.choices[0].message.content or ""
+        if generation:
+            generation.end(
+                output=content,
+                usage={
+                    "input": response.usage.prompt_tokens,
+                    "output": response.usage.completion_tokens,
+                },
+            )
         return LLMResponse(
             content=content,
             model=model,
@@ -84,6 +108,21 @@ class LLMClient:
 
 def estimate_tokens(text: str) -> int:
     return max(1, int(len(text.split()) * 1.3))
+
+
+def _get_langfuse(settings: Settings):
+    if not settings.langfuse_enabled:
+        return None
+    try:
+        from langfuse import Langfuse
+
+        return Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_host,
+        )
+    except Exception:
+        return None
 
 
 def get_llm_client() -> LLMClient:

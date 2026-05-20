@@ -1,319 +1,262 @@
 # LLM Observatory
 
-Production-oriented monitoring for LLM quality, hallucination risk, latency, token usage, endpoint-level cost, and evaluation drift.
+> Centralized monitoring for LLM quality, hallucination risk, latency, cost, and evaluation drift — across all endpoints and providers.
 
-## Problem Statement
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Gateway-009688?logo=fastapi)
+![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?logo=streamlit)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-LLM-powered features can degrade silently. A prompt change, model swap, retrieval issue, or traffic spike can increase hallucinations, latency, and cost before application health checks notice anything. This project implements an observability platform that captures LLM calls, evaluates response quality, supports organization-scoped ingestion, and surfaces operational metrics.
+---
 
-## Business Use Case
+## The Problem
 
-An organization has multiple product features calling an LLM: support automation, sales assistance, and research workflows. Engineering needs visibility into which endpoint is expensive, which responses are low quality, and whether hallucination risk is increasing. The observatory provides a local-first implementation with a path to Azure OpenAI, PostgreSQL, Container Apps, Key Vault, and Application Insights.
+LLM-powered features degrade silently. A prompt change, a model swap, a retrieval issue, or a traffic spike can increase hallucinations, latency, and cost before any application health check notices anything.
 
-## Architecture
+Engineering teams operating multiple LLM endpoints — support automation, sales assistance, research workflows — typically have no visibility into which endpoint is expensive, which responses are low quality, or whether hallucination risk is trending upward. Standard APM tools track HTTP status codes. They do not evaluate whether a response was faithful, relevant, or safe.
 
-LLM Observatory is organized around a clear product boundary: applications send LLM traffic through the gateway or submit completed traces through the ingestion API; the platform persists telemetry, runs evaluations, evaluates alert rules, and exposes operational views through the dashboard.
+---
 
-### Service Boundary
+## What It Does
+
+- **Centralizes LLM traffic through a gateway** — proxy mode routes calls through the observatory, capturing latency, token usage, and cost per request; ingest mode accepts completed traces from existing integrations
+- **Evaluates response quality automatically** — faithfulness, relevancy, and hallucination scoring per call, using LLM-as-judge or deterministic heuristics
+- **Alerts on quality and reliability thresholds** — configurable alert rules create incidents when metrics breach defined limits; incidents are tracked through acknowledge → resolve lifecycle
+
+---
+
+## Dashboard
+
+![LLM Observatory Overview](demo/llm-observatory-dashboard.png)
+
+*Latency by endpoint, cost by endpoint, call volume, error rate, hallucination flags — all filterable by project and endpoint.*
+
+---
+
+![LLM Observatory Incidents](demo/llm-observatory-incidents.png)
+
+*Active incidents with severity, trigger timestamp, and resolution controls.*
+
+---
+
+## System Architecture
 
 ```mermaid
 flowchart TD
-    A["Product Applications"] -->|"Proxy mode"| B["FastAPI Gateway"]
-    A -->|"Ingest mode"| C["Ingestion API"]
-    B --> D["Provider Layer"]
-    D --> E["Mock / OpenAI / Azure OpenAI"]
-    B --> F["Platform Database"]
-    C --> F
-    F --> G["Evaluation Worker"]
-    F --> H["Alert Worker"]
-    G --> F
-    H --> I["Incidents and Alert Channels"]
-    F --> J["Dashboard"]
-    K["JWT Users and Service API Keys"] --> B
-    K --> C
+    subgraph APPS["PRODUCT APPLICATIONS"]
+        direction LR
+        PROXY["Proxy mode\n(route through gateway)"]
+        INGEST["Ingest mode\n(submit completed traces)"]
+    end
+
+    subgraph GW["FASTAPI GATEWAY  —  JWT · API Keys · RBAC"]
+        direction LR
+        AUTH["Auth Layer\nowner / admin / engineer / analyst"]
+        PROVIDER["Provider Layer\nmock / OpenAI / Azure OpenAI"]
+    end
+
+    subgraph PLATFORM["PLATFORM"]
+        direction LR
+        DB[("SQLite / PostgreSQL\nTrace + Metadata Store")]
+        EVAL["Evaluation Worker\nfaithfulness · relevancy\nhallucination scoring"]
+        ALERT["Alert Worker\nrule evaluation\nincident lifecycle"]
+        METRICS["DuckDB Metrics Store\ncost · latency · quality"]
+    end
+
+    subgraph OUT["OUTPUTS"]
+        direction LR
+        DASH["Streamlit Dashboard\nOverview · Traces · Evals · Incidents · API Keys"]
+        PROM["Prometheus /metrics\nfor external scraping"]
+        SLACK["Slack / Webhook\nincident notifications"]
+    end
+
+    PROXY --> AUTH
+    INGEST --> AUTH
+    AUTH --> PROVIDER --> DB
+    INGEST --> DB
+    DB --> EVAL --> DB
+    DB --> ALERT --> SLACK
+    DB --> METRICS
+    METRICS --> DASH
+    DB --> DASH
+    DB --> PROM
+
+    style AUTH fill:#ede9fe,stroke:#7c3aed
+    style EVAL fill:#dbeafe,stroke:#3b82f6
+    style ALERT fill:#fef3c7,stroke:#d97706
+    style DASH fill:#d1fae5,stroke:#059669
 ```
 
-### Data Flow
+---
+
+## Data Flow
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant App as Product Application
-    participant API as FastAPI Gateway
+    participant GW as FastAPI Gateway
     participant LLM as LLM Provider
-    participant DB as PostgreSQL or SQLite
+    participant DB as Trace Store
     participant Eval as Evaluation Worker
-    participant Alerts as Alert Worker
+    participant Alert as Alert Worker
     participant UI as Dashboard
 
-    App->>API: Authenticated chat or log ingestion
-    API->>LLM: Provider call when proxy mode is used
-    LLM-->>API: Completion, usage, latency, errors
-    API->>DB: Persist trace, cost, tokens, metadata
-    Eval->>DB: Read calls requiring evaluation
-    Eval->>DB: Store faithfulness, relevancy, risk scores
-    Alerts->>DB: Evaluate alert rules and create incidents
+    App->>GW: Authenticated request (proxy or ingest)
+    GW->>LLM: Provider call (proxy mode only)
+    LLM-->>GW: Completion + usage + latency
+    GW->>DB: Persist trace, tokens, cost, metadata
+    Eval->>DB: Read unevaluated traces
+    Eval->>DB: Write faithfulness, relevancy, hallucination scores
+    Alert->>DB: Evaluate alert rules
+    Alert->>Alert: Create / update incidents
     UI->>DB: Render metrics, traces, evaluations, incidents
 ```
 
-### Forward Azure Deployment
+---
+
+## Azure Deployment
 
 ```mermaid
 flowchart TD
-    A["Product Services"] --> B["Azure Container Apps: Gateway"]
-    C["Internal Tools"] --> D["Azure Container Apps: Dashboard"]
-    B --> E["Azure OpenAI"]
-    B --> F["Azure PostgreSQL"]
-    D --> F
-    G["Container Apps Jobs: Evaluation Worker"] --> F
-    G --> E
-    H["Container Apps Jobs: Alert Worker"] --> F
-    H --> I["Slack / Email / Webhook"]
-    J["Azure Key Vault"] --> B
-    J --> G
-    J --> H
-    B --> K["Application Insights"]
-    G --> K
-    H --> K
+    APP["Product Services"] --> CGWY["Azure Container Apps\nGateway"]
+    DASH["Internal Teams"] --> CDASH["Azure Container Apps\nDashboard"]
+    CGWY --> AOI["Azure OpenAI"]
+    CGWY --> PG["Azure PostgreSQL"]
+    CDASH --> PG
+    EVAL["Container Apps Jobs\nEvaluation Worker"] --> PG & AOI
+    ALERT["Container Apps Jobs\nAlert Worker"] --> PG
+    ALERT --> NOTIF["Slack / Email / Webhook"]
+    KV["Azure Key Vault"] --> CGWY & EVAL & ALERT
+    CGWY & EVAL & ALERT --> AI["Application Insights"]
 ```
 
-### Dashboard Preview
+---
 
-![LLM Observatory dashboard](demo/llm-observatory-dashboard.png)
+## Key Capabilities
 
-### Incident Operations
+| Capability | Detail |
+|------------|--------|
+| **Gateway proxy** | All LLM calls route through the gateway — one integration point, full trace capture |
+| **Multi-org support** | Organization, project, endpoint, and API key isolation — built for multi-tenant deployments |
+| **RBAC** | Four roles: owner, admin, engineer, analyst — scoped to organization |
+| **Quality evaluation** | LLM-as-judge (faithfulness, relevancy, hallucination) with heuristic fallback |
+| **Alert rules** | Configurable thresholds per metric — incidents created, acknowledged, and resolved in-platform |
+| **Prometheus metrics** | `/metrics` endpoint for external scraping and Grafana integration |
+| **Mock LLM mode** | Full platform runs without an LLM API key — deterministic responses for demos and CI |
+| **Docker Compose** | Optional containerized topology: API + dashboard + PostgreSQL + workers |
+| **Azure-ready** | Key Vault, Azure OpenAI, PostgreSQL, Container Apps, Application Insights paths documented |
 
-![LLM Observatory incidents](demo/llm-observatory-incidents.png)
+---
 
-### API Key Management
-
-![LLM Observatory API keys](demo/llm-observatory-api-keys.png)
-
-## Capabilities
-
-- Gateway endpoint for centralized LLM calls
-- Organization, user, project, endpoint, and API key management APIs
-- JWT user authentication and service API key ingestion
-- Role-based access control for owner, admin, engineer, and analyst roles
-- PostgreSQL-compatible SQLAlchemy persistence with Alembic migrations
-- Request, response, latency, token, cost, endpoint, session, and status logging
-- DuckDB-backed local metrics store
-- Deterministic mock LLM mode for no-key demos
-- OpenAI and Azure OpenAI provider modes through environment variables
-- Batch LLM-as-judge or heuristic evaluation
-- Hallucination, faithfulness, and relevancy scoring
-- Streamlit dashboard with latency, cost, logs, and evaluation results
-- Alert rules, incident creation, acknowledgement, and resolution
-- Dashboard API key creation and revocation workflow
-- Prometheus-compatible `/metrics` endpoint and request correlation headers
-- GitHub Actions CI for automated test validation
-- Optional Docker Compose configuration for API, dashboard, PostgreSQL, and workers
-- Azure deployment placeholders without committed secrets
-
-## Metrics
+## Metrics Captured
 
 | Category | Metrics |
-| --- | --- |
-| Usage | total calls, calls by endpoint, session id |
-| Latency | per-call latency, average latency |
-| Cost | prompt tokens, completion tokens, total cost, cost by endpoint |
-| Quality | faithfulness score, relevancy score, hallucination flag |
-| Reliability | status, failed call count, error text |
+|----------|---------|
+| **Usage** | Total calls, calls by endpoint, session ID |
+| **Latency** | Per-call latency, average latency by endpoint |
+| **Cost** | Prompt tokens, completion tokens, total cost, cost by endpoint |
+| **Quality** | Faithfulness score, relevancy score, hallucination flag |
+| **Reliability** | Status, failed call count, error text |
 
-See [docs/metrics.md](docs/metrics.md) for metric definitions.
+---
 
-## Enterprise Backend APIs
-
-Implemented backend foundations:
-
-- [API reference](docs/api.md)
-- [Authentication and authorization](docs/auth.md)
-- [Database and migrations](docs/database.md)
-- [Dashboard architecture](docs/dashboard.md)
-- [Evaluation pipeline](docs/evaluation.md)
-- [Alerting and incidents](docs/alerting.md)
-- [Operations](docs/operations.md)
-- [Security](docs/security.md)
-- [Roadmap](docs/roadmap.md)
-- [Customer demo guide](docs/demo.md)
-
-## Quick Start
-
-Python 3.11+ is required.
+## Quickstart
 
 ```bash
-cd 01-llm-observatory
-cp .env.example .env
-uv venv .venv --python 3.11
-source .venv/bin/activate
+# 1. Clone and set up environment
+git clone https://github.com/manjunath-hanmantgad/LLM-Production-Monitoring.git
+cd LLM-Production-Monitoring/01-llm-observatory
+uv venv .venv --python 3.11 && source .venv/bin/activate
 uv pip install -r requirements.txt
+
+# 2. Configure
+cp .env.example .env
+
+# 3. Run migrations and seed demo data
 alembic upgrade head
 python storage/db.py
 python demo/seed_data.py
-```
 
-Run the gateway:
-
-```bash
+# 4. Start the gateway
 uvicorn gateway.gateway:app --reload --port 8001
-```
 
-Run the dashboard in another terminal:
-
-```bash
+# 5. Start the dashboard (separate terminal)
 streamlit run dashboard/app.py --server.port 8510
 ```
 
-Open:
+| Service | URL |
+|---------|-----|
+| Gateway health | http://localhost:8001/health |
+| Dashboard | http://localhost:8510 |
+| Prometheus metrics | http://localhost:8001/metrics |
 
-- Gateway health: `http://localhost:8001/health`
-- Dashboard: `http://localhost:8510`
+No LLM API key required — set `LLM_PROVIDER=mock` in `.env` for a fully functional demo.
 
-## API Example
+---
 
-Register an organization owner:
+## Configuration
 
-```bash
-curl -X POST http://localhost:8001/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "organization_name": "Acme AI",
-    "organization_slug": "acme-ai",
-    "email": "owner@example.com",
-    "password": "correct-horse-battery-staple"
-  }'
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `mock` | `mock`, `openai`, or `azure` |
+| `STORAGE_MODE` | `local` | `local` (SQLite) or `postgres` |
+| `DATABASE_URL` | `sqlite:///storage/observatory.db` | Database connection string |
+| `JWT_SECRET_KEY` | — | Required — long random string |
+| `API_KEY_PEPPER` | — | Required — long random string |
+| `OPENAI_API_KEY` | — | Required when `LLM_PROVIDER=openai` |
+| `SLACK_WEBHOOK_URL` | — | Optional — alert notifications |
 
-Proxy a mock LLM call through the gateway:
+Full variable reference including Azure and OIDC options: [`.env.example`](.env.example)
 
-```bash
-curl -X POST http://localhost:8001/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "What is 2+2? Answer in one word."}],
-    "endpoint": "support-assistant",
-    "session_id": "demo-001"
-  }'
-```
+---
 
-## Environment Configuration
+## Running Workers
 
-Default mode requires no LLM API key:
-
-```env
-LLM_PROVIDER=mock
-STORAGE_MODE=local
-DATABASE_URL=sqlite:///storage/observatory.db
-JWT_SECRET_KEY=replace_with_a_long_random_secret
-API_KEY_PEPPER=replace_with_a_long_random_pepper
-```
-
-OpenAI mode:
-
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_CHAT_MODEL=gpt-4o
-OPENAI_EVAL_MODEL=gpt-4o-mini
-```
-
-Azure mode, required only when Azure is available:
-
-```env
-LLM_PROVIDER=azure
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_KEY=your_azure_openai_key_here
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_EVAL_DEPLOYMENT=gpt-4o-mini
-APPLICATIONINSIGHTS_CONNECTION_STRING=your_connection_string
-AZURE_KEY_VAULT_URL=https://your-vault.vault.azure.net/
-```
-
-## Evaluation Workflow
-
-Run batch evaluation for unevaluated calls:
-
-```bash
-python eval_engine/run_evals.py --limit 50
-```
-
-Run platform evaluation jobs:
+Evaluation worker (scores unevaluated traces):
 
 ```bash
 python workers/evaluation_worker.py --limit 10
 ```
 
-When `LLM_PROVIDER=mock`, the evaluator uses deterministic heuristic scoring. When `LLM_PROVIDER=openai` or `LLM_PROVIDER=azure`, it attempts LLM-as-judge evaluation and falls back to heuristic scoring if the judge call fails.
-
-## Alerts
-
-Run alert checks:
-
-```bash
-python alerts/slack_alerts.py
-```
-
-Run platform alert rules and incident creation:
+Alert worker (evaluates rules, creates incidents):
 
 ```bash
 python workers/alert_worker.py
 ```
 
-## Demo Reset And Seed
-
-For repeatable demos:
+Docker Compose (optional — runs all services including PostgreSQL):
 
 ```bash
-python demo/reset_demo.py
-python demo/seed_platform_demo.py
-```
-
-If `SLACK_WEBHOOK_URL` is empty, the script prints the alert payload locally. If configured, it sends alerts to Slack.
-
-## Docker
-
-Docker is optional. The verified local path uses Python, SQLite, mock LLM mode, and the commands above. The Compose topology is included for reviewers who want container parity with PostgreSQL-backed deployment.
-
-```bash
-cp .env.example .env
 docker compose up --build
 ```
 
-Gateway: `http://localhost:8001`
+---
 
-Dashboard: `http://localhost:8501`
+## Azure Production Path
 
-## Deployment
+| Local | Azure Production |
+|-------|-----------------|
+| `LLM_PROVIDER=mock` or `openai` | Azure OpenAI (`LLM_PROVIDER=azure`) |
+| SQLite (`STORAGE_MODE=local`) | Azure Database for PostgreSQL |
+| `uvicorn` local process | Azure Container Apps |
+| `.env` file | Azure Key Vault + Managed Identity |
+| Prometheus scrape | Azure Application Insights |
+| Slack webhook | Azure Logic Apps + Notification Hub |
 
-See [docs/deployment.md](docs/deployment.md) for the forward deployment path. Azure credentials are not required for local operation. They are required only for production deployment with Azure OpenAI, Key Vault, Application Insights, Container Apps, and production storage.
+Full deployment guide: [docs/deployment.md](docs/deployment.md)
 
-## Security Notes
+---
 
-- Secrets are loaded from environment variables.
-- `.env` is excluded from source control.
-- `.env.example` contains placeholders only.
-- Azure Key Vault is the intended production secret store.
-- JWT authentication and hashed service API keys are implemented for local backend API use.
-- Entra ID/OAuth provider integration is tracked as a production roadmap item.
+## Further Reading
 
-## Repository Structure
-
-```text
-.
-├── alerts/
-├── dashboard/
-├── demo/
-├── docs/
-├── eval_engine/
-├── gateway/
-├── shared/
-├── storage/
-├── tests/
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-└── requirements.txt
-```
-
-## Professional Implementation Summary
-
-This project demonstrates an end-to-end LLM observability workflow: centralizing LLM access through a gateway, capturing operational telemetry, calculating token cost, evaluating response quality, surfacing metrics through a dashboard, and preparing a clear path from local development to Azure production deployment.
+| Document | Contents |
+|----------|---------|
+| [docs/api.md](docs/api.md) | Full API reference |
+| [docs/auth.md](docs/auth.md) | Authentication, JWT, API keys, RBAC |
+| [docs/evaluation.md](docs/evaluation.md) | Evaluation pipeline and scoring |
+| [docs/alerting.md](docs/alerting.md) | Alert rules and incident lifecycle |
+| [docs/dashboard.md](docs/dashboard.md) | Dashboard architecture |
+| [docs/deployment.md](docs/deployment.md) | Azure deployment steps |
+| [docs/security.md](docs/security.md) | Security model and hardening |
+| [docs/demo.md](docs/demo.md) | Customer demo guide |

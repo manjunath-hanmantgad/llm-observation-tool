@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import text
 
 from gateway.cost import calculate_cost
@@ -80,7 +81,7 @@ def readiness() -> dict[str, str]:
 
 @app.get("/metrics", include_in_schema=False)
 def prometheus_metrics() -> Response:
-    return Response(content=metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+    return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/stats/summary")

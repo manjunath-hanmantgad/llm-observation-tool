@@ -30,9 +30,13 @@ class Settings:
     azure_openai_eval_deployment: str = os.getenv("AZURE_OPENAI_EVAL_DEPLOYMENT", "gpt-4o-mini")
     azure_tenant_id: str = os.getenv("AZURE_TENANT_ID", "")
     azure_client_id: str = os.getenv("AZURE_CLIENT_ID", "")
+    azure_client_secret: str = os.getenv("AZURE_CLIENT_SECRET", "")
 
     slack_webhook_url: str = os.getenv("SLACK_WEBHOOK_URL", "")
     applicationinsights_connection_string: str = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+    langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    langfuse_secret_key: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    langfuse_host: str = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
     hallucination_rate_threshold: float = float(os.getenv("ALERT_HALLUCINATION_RATE_THRESHOLD", "0.20"))
     avg_latency_ms_threshold: float = float(os.getenv("ALERT_AVG_LATENCY_MS_THRESHOLD", "2500"))
 
@@ -43,6 +47,10 @@ class Settings:
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        return bool(self.langfuse_public_key and self.langfuse_secret_key)
 
 
 @lru_cache(maxsize=1)

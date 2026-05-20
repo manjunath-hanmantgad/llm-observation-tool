@@ -26,7 +26,7 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - ./storage:/app/storage
+      - observatory-storage:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,7 +46,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./storage:/app/storage
+      - observatory-storage:/app/storage
     depends_on:
       gateway:
         condition: service_healthy
@@ -59,7 +59,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
     volumes:
-      - ./storage:/app/storage
+      - observatory-storage:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,10 +72,11 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://observatory:observatory_dev_password@postgres:5432/observatory
     volumes:
-      - ./storage:/app/storage
+      - observatory-storage:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres-data:
+  observatory-storage:

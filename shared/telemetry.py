@@ -1,68 +1,79 @@
+from __future__ import annotations
+
 import logging
 import threading
-import time
+import time as _time
 from typing import Any
+
+from prometheus_client import Counter, Gauge, Histogram, REGISTRY, generate_latest
 
 from shared.config import get_settings
 
 
+def _configure_azure_monitor() -> bool:
+    settings = get_settings()
+    if not settings.applicationinsights_connection_string:
+        return False
+    try:
+        from azure.monitor.opentelemetry import configure_azure_monitor
+
+        configure_azure_monitor(
+            connection_string=settings.applicationinsights_connection_string,
+            logger_name="llm-observatory",
+        )
+        return True
+    except Exception as exc:
+        logging.getLogger("telemetry").warning("Azure Monitor setup failed: %s", exc)
+        return False
+
+
+_azure_configured = False
+_azure_lock = threading.Lock()
+
+
+def _ensure_azure_configured() -> bool:
+    global _azure_configured
+    if _azure_configured:
+        return True
+    with _azure_lock:
+        if not _azure_configured:
+            _azure_configured = _configure_azure_monitor()
+    return _azure_configured
+
+
+_NS = "llm_observatory"
+
+http_requests_total = Counter(f"{_NS}_http_requests_total", "Total HTTP requests", ["status_code"])
+http_request_latency = Histogram(
+    f"{_NS}_http_request_latency_seconds",
+    "HTTP request latency",
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+)
+llm_calls_total = Counter(f"{_NS}_llm_calls_total", "Total LLM calls", ["status"])
+llm_latency = Histogram(
+    f"{_NS}_llm_latency_ms",
+    "LLM call latency ms",
+    buckets=[100, 250, 500, 1000, 2000, 5000, 10000],
+)
+llm_cost_usd = Counter(f"{_NS}_llm_cost_usd_total", "Total LLM cost in USD")
+process_start_time = Gauge(f"{_NS}_process_start_time_seconds", "Process start time")
+process_start_time.set(_time.time())
+
+
 class PrometheusMetrics:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.started_at = time.time()
-        self.request_count = 0
-        self.error_count = 0
-        self.request_latency_seconds_sum = 0.0
-        self.llm_call_count = 0
-        self.llm_call_error_count = 0
-        self.llm_latency_ms_sum = 0.0
-        self.llm_cost_usd_sum = 0.0
+    """Thin wrapper keeping the existing call interface in gateway.py unchanged."""
 
     def observe_request(self, *, latency_seconds: float, status_code: int) -> None:
-        with self._lock:
-            self.request_count += 1
-            self.request_latency_seconds_sum += latency_seconds
-            if status_code >= 500:
-                self.error_count += 1
+        http_requests_total.labels(status_code=str(status_code)).inc()
+        http_request_latency.observe(latency_seconds)
 
     def observe_llm_call(self, *, latency_ms: float, cost_usd: float, status: str) -> None:
-        with self._lock:
-            self.llm_call_count += 1
-            self.llm_latency_ms_sum += latency_ms
-            self.llm_cost_usd_sum += cost_usd
-            if status != "success":
-                self.llm_call_error_count += 1
+        llm_calls_total.labels(status=status).inc()
+        llm_latency.observe(latency_ms)
+        llm_cost_usd.inc(cost_usd)
 
     def render(self) -> str:
-        uptime = max(0.0, time.time() - self.started_at)
-        with self._lock:
-            lines = [
-                "# HELP llm_observatory_uptime_seconds Process uptime in seconds.",
-                "# TYPE llm_observatory_uptime_seconds gauge",
-                f"llm_observatory_uptime_seconds {uptime:.6f}",
-                "# HELP llm_observatory_http_requests_total Total HTTP requests.",
-                "# TYPE llm_observatory_http_requests_total counter",
-                f"llm_observatory_http_requests_total {self.request_count}",
-                "# HELP llm_observatory_http_request_errors_total HTTP requests returning 5xx responses.",
-                "# TYPE llm_observatory_http_request_errors_total counter",
-                f"llm_observatory_http_request_errors_total {self.error_count}",
-                "# HELP llm_observatory_http_request_latency_seconds_sum Total HTTP request latency.",
-                "# TYPE llm_observatory_http_request_latency_seconds_sum counter",
-                f"llm_observatory_http_request_latency_seconds_sum {self.request_latency_seconds_sum:.6f}",
-                "# HELP llm_observatory_llm_calls_total Total LLM calls through the gateway.",
-                "# TYPE llm_observatory_llm_calls_total counter",
-                f"llm_observatory_llm_calls_total {self.llm_call_count}",
-                "# HELP llm_observatory_llm_call_errors_total Failed LLM calls through the gateway.",
-                "# TYPE llm_observatory_llm_call_errors_total counter",
-                f"llm_observatory_llm_call_errors_total {self.llm_call_error_count}",
-                "# HELP llm_observatory_llm_latency_ms_sum Total LLM call latency in milliseconds.",
-                "# TYPE llm_observatory_llm_latency_ms_sum counter",
-                f"llm_observatory_llm_latency_ms_sum {self.llm_latency_ms_sum:.6f}",
-                "# HELP llm_observatory_llm_cost_usd_sum Total estimated LLM cost in USD.",
-                "# TYPE llm_observatory_llm_cost_usd_sum counter",
-                f"llm_observatory_llm_cost_usd_sum {self.llm_cost_usd_sum:.8f}",
-            ]
-        return "\n".join(lines) + "\n"
+        return generate_latest(REGISTRY).decode("utf-8")
 
 
 metrics = PrometheusMetrics()
@@ -80,11 +91,15 @@ def setup_logger(name: str) -> logging.Logger:
 
 
 def track_event(name: str, properties: dict[str, Any] | None = None) -> None:
-    settings = get_settings()
-    logger = setup_logger("telemetry")
+    logger = setup_logger("llm-observatory.telemetry")
     properties = properties or {}
 
-    if settings.applicationinsights_connection_string:
-        logger.info("cloud_event=%s properties=%s", name, properties)
+    if _ensure_azure_configured():
+        logger.info(
+            "event=%s properties=%s",
+            name,
+            properties,
+            extra={"custom_dimensions": {**properties, "event_name": name}},
+        )
     else:
         logger.info("local_event=%s properties=%s", name, properties)
